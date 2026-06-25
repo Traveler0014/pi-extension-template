@@ -234,7 +234,321 @@ pi.registerMessageRenderer("my-message-type", (message, _options, theme) => {
 });
 ```
 
-### 插件 README 结构
+### 代码分层（lib.ts 模式）
+
+**将纯逻辑与 pi 胶水代码分离** — 提高可测试性和可复用性：
+
+```
+tools/<plugin-name>/
+├── index.ts        # pi 注册入口（registerTool、registerCommand）
+├── lib.ts          # 纯函数、类型、常量（无 pi API 依赖）
+├── lib.test.ts     # 单元测试（纯函数无需 mock）
+└── README.md
+```
+
+**index.ts 只做三件事**：
+1. 导入 lib.ts 的纯函数
+2. 调用 `pi.registerTool()` / `pi.registerCommand()`
+3. 在 execute() 中编排调用链
+
+**lib.ts 包含**：
+- 类型定义
+- 配置持久化（load/save config）
+- 请求封装（apiRequest）
+- 解析/校验函数（parseRepo、validateEmail）
+- 格式化工具（maskToken、formatDuration）
+
+真实案例：`pi-github/tools/pi-github/lib.ts`（300+ 行纯函数）
+
+### Test 策略
+
+**每个插件都应包含单元测试**，使用 vitest：
+
+```bash
+# vitest.config.ts
+import { defineConfig } from "vitest/config";
+export default defineConfig({
+  test: {
+    globals: true,
+    exclude: ["**/e2e.test.ts", "**/node_modules/**"],
+  },
+});
+```
+
+```bash
+npm test              # 所有测试
+npx vitest run        # 单次运行
+npx vitest            # watch 模式
+```
+
+**测试分层**：
+
+| 层级 | 说明 | 示例 |
+|------|------|------|
+| 纯函数测试 | 测试 lib.ts 中的函数，无外部依赖 | `validateEmail()`、`parseRepo()` |
+| 配置测试 | 测试 load/save config | `loadConfig()` 返回默认值 |
+| 集成测试 | 真实 API 调用，用 env var 控制 | `describe.skipIf(!token)("...")` |
+
+参考：`pi-github/tools/pi-github/lib.test.ts`（46 个测试）、本模板 `tools/example-plugin/lib.test.ts`（12 个测试）
+
+### 状态管理
+
+需要跨 session 持久化状态时（如 alarm 闹钟列表、config 配置），使用以下模式：
+
+```typescript
+// 1. 通过 pi.appendEntry() 写入 session 历史
+function persistState() {
+  pi.appendEntry(CUSTOM_TYPE, {
+    alarms: alarms.map((a) => ({ ...a })),
+    nextId,
+  });
+}
+
+// 2. 通过 session_start / session_tree 事件恢复
+pi.on("session_start", async (_event, ctx) => {
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === CUSTOM_TYPE) {
+      // 恢复状态...
+    }
+  }
+});
+
+// 3. session_shutdown 时清理定时器等资源
+pi.on("session_shutdown", async () => {
+  clearAllTimers();
+});
+```
+
+参考：`pi-alarm/tools/alarm/index.ts` 中的完整状态管理实现。
+
+### Tool 结果格式（结构化返回）
+
+**❌ 禁止直接返回字符串**：
+
+```typescript
+// ❌ 错误 — agent 无法解析
+execute() { return "Error: something went wrong"; }
+execute() { return "Success: created issue #42"; }
+```
+
+**✅ 必须返回结构化对象**：
+
+```typescript
+// ✅ 正确
+function textResult(text: string, details?: Record<string, unknown>) {
+  return {
+    content: [{ type: "text", text }],
+    details: details ?? {},
+  };
+}
+
+async execute(_toolCallId, params) {
+  // 成功
+  return textResult("Issue created: #42 — Fix login bug", {
+    number: 42, title: "Fix login bug", url: "..."
+  });
+
+  // 错误（返回中也带 content，而非 throw）
+  return textResult("Error: invalid repo format", { error: "bad repo" });
+}
+```
+
+**renderResult 读取 details 来决定 TUI 展示**：
+
+```typescript
+renderResult(result, _options, theme) {
+  const details = result.details as { error?: string } | undefined;
+  if (details?.error) {
+    return new Text(theme.fg("error", "Failed"), 0, 0);
+  }
+  return new Text(theme.fg("success", "Done"), 0, 0);
+}
+```
+
+### 常用 Theme 颜色参考
+
+```typescript
+// 工具调用
+renderCall(args, theme) {
+  theme.fg("toolTitle", theme.bold("tool_name"))  // 工具名
+  theme.fg("accent", args.repo)                    // 参数高亮
+  theme.fg("dim", "(optional info)")               // 次要信息
+}
+
+// 工具结果
+renderResult(result, _opts, theme) {
+  theme.fg("success", "OK / Created / Done")       // 成功
+  theme.fg("error", "Failed / Error")              // 失败
+  theme.fg("warning", "Warning text")              // 警告
+  theme.fg("muted", "Compact summary")             // 摘要
+}
+
+// 自定义消息
+renderer(message, _opts, theme) {
+  theme.fg("customMessageLabel", "HEADER")          // 消息标签
+  theme.fg("customMessageText", "body text")        // 消息正文
+  theme.bg("customMessageBg", "line text")          // 气泡背景
+}
+```
+
+---
+
+## 开发技巧
+
+### 如何查阅 pi API 文档
+
+pi 的文档位于 npm 包 `@earendil-works/pi-coding-agent` 的安装目录：
+
+```bash
+# 找到包的安装位置
+find ~/.local/share/pnpm -path "*/pi-coding-agent*/docs" -type d 2>/dev/null
+
+# 关键文档列表：
+# docs/extensions.md     — ExtensionAPI 完整参考（registerTool/Command/Provider 等）
+# docs/tui.md            — TUI 组件 API（Text, theme, colors）
+# docs/themes.md         — 主题定制
+# docs/skills.md         — 技能/能力注册
+# docs/sdk.md            — SDK 集成
+# docs/models.md         — 模型配置
+# docs/packages.md       — 包结构和发布
+# docs/prompt-templates.md — Prompt 模板
+# docs/keybindings.md    — 快捷键
+# docs/custom-provider.md — 自定义 Provider
+```
+
+**最佳实践**：开发前先通读 `docs/extensions.md` 和 `docs/tui.md`，了解所有可用 API。
+
+### 从真实插件学习
+
+| 仓库 | 学习点 |
+|------|--------|
+| [pi-alarm](https://github.com/Traveler0014/pi-alarm) | 状态管理、session 生命周期、定时器、LLM fallback、消息渲染 |
+| [pi-github](https://github.com/Traveler0014/pi-github) | lib.ts 分层、多实例架构、TUI renderCall/renderResult、vitest 测试、多平台兼容 |
+| [pi-providers](https://github.com/Traveler0014/pi-providers) | Provider 注册、compat 设置、模型定义 |
+
+### 开发流程
+
+```bash
+# 1. 创建插件目录和文件
+mkdir -p tools/my-plugin
+cp tools/example-plugin/index.ts tools/my-plugin/index.ts  # 从模板开始
+
+# 2. 开发时用 -e 快速加载测试
+pi -e ./tools/my-plugin/index.ts
+
+# 3. 编写 lib.ts + lib.test.ts
+npx vitest                    # watch 模式边写边测
+
+# 4. 冒烟测试
+pi -e ./tools/my-plugin/index.ts  # 确认启动不崩溃
+/example                            # 测试命令
+> Please call my_tool now           # 测试工具
+
+# 5. 补全文档
+npm run update-docs
+
+# 6. 发布
+bash scripts/release.sh tools/my-plugin patch
+```
+
+### 调试技巧
+
+- **Tool 不出现**：检查 `description` 是否足够详细（agent 根据 description 决定何时调用）
+- **Command 不响应**：检查是否为 kebab-case，前缀是否匹配
+- **TUI 显示异常**：检查 `renderResult` 是否正确读取 `result.content[0].text`
+- **Provider 模型不可见**：检查 peerDependencies 是否包含 `@earendil-works/pi-ai`，检查 `/login` 是否完成
+- **测试跑不起来**：检查 `vitest.config.ts` 中是否 exclude 了正确的文件
+
+---
+
+## 常见陷阱
+
+### ❌ execute() 返回裸字符串
+
+```typescript
+// ❌ 错误 — agent 无法解析
+execute() { return "OK created"; }
+
+// ✅ 正确
+async execute(_toolCallId, params) {
+  return {
+    content: [{ type: "text", text: "Issue created: #42" }],
+    details: { number: 42 },
+  };
+}
+```
+
+### ❌ Command handler 返回字符串
+
+```typescript
+// ❌ 错误 — 用户看不到
+handler(args, ctx) { return "Hello"; }
+
+// ✅ 正确 — 用 ctx.ui.notify()
+handler(args, ctx) {
+  ctx.ui.notify("Hello from command!", "info");
+}
+```
+
+### ❌ 用 action 枚举合并不同操作
+
+```typescript
+// ❌ 反模式 — agent 困惑，参数组合复杂
+pi.registerTool({
+  name: "myplugin",
+  parameters: { action: "create" | "list" | "delete" },
+  execute(params) { switch (params.action) {...} },
+});
+
+// ✅ 拆分为独立 tool
+pi.registerTool({ name: "myplugin_create", ... });
+pi.registerTool({ name: "myplugin_list",   ... });
+pi.registerTool({ name: "myplugin_delete", ... });
+```
+
+### ❌ Command 解析失败直接报错
+
+```typescript
+// ❌ 死胡同 — 用户不知道下一步做什么
+if (!parsed) {
+  ctx.ui.notify("Invalid input", "error");
+  return;
+}
+
+// ✅ LLM fallback — agent 帮你处理
+if (!parsed && ctx.isIdle()) {
+  pi.sendUserMessage(`User input: "${input}". Please handle this.`);
+  return;
+}
+```
+
+### ❌ 依赖 Unix 环境
+
+```typescript
+// ❌ 不可移植
+const home = process.env.HOME;
+execSync("date");
+
+// ✅ 跨平台
+import * as os from "node:os";
+const home = os.homedir();
+const now = new Date();
+```
+
+### ❌ lib.ts 中 import pi API
+
+```typescript
+// ❌ lib.ts 不应依赖 pi — 不可单独测试
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// ✅ lib.ts 只依赖 Node.js 内置 + 第三方纯函数库
+import * as fs from "node:fs";
+import * as path from "node:path";
+```
+
+---
+
+## 插件 README 结构
 
 每个插件的 `README.md` 必须包含：
 
@@ -273,14 +587,16 @@ Tool 和 Command 应分别列出并标注命名风格：
 
 ### Step 2: 冒烟测试
 
-确认插件不影响 pi 正常启动：
+确认插件不影响 pi 正常启动，并运行单元测试：
 
 ```bash
-pi -e ./<plugin-path>/index.ts
+pi -e ./<plugin-path>/index.ts        # 冒烟：启动不崩溃
+npm test                              # 单元测试全部通过
 ```
 
 检查项：
 - [ ] pi 正常启动，无崩溃
+- [ ] `npm test` 全部通过
 - [ ] 注册的 Tool / Command 可正常调用
 - [ ] Provider 类插件：`/model` 可见新模型，`/login` 流程正常
 
@@ -355,3 +671,5 @@ pi install <installUrl>  # 确认可安装
 - 脚本支持递归扫描（最深 2 层），兼容 Layout 2 和 Layout 3
 - 插件 README 中的安装命令使用 HTTPS 地址（`installUrl`），不使用 SSH
 - 裸 `.ts` 文件（Layout 1）不支持版本管理和 `pi install`，不推荐用于发布
+- **首次发布前必须删除示例插件**（`example-provider`、`tools/example-plugin` 等模板目录），确保 `package.json` 的 `pi.extensions` 只包含实际插件路径
+- **Tool execute() 绝不能返回裸字符串** — 必须返回 `{ content: [...], details: {...} }`
