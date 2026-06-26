@@ -185,6 +185,32 @@ const home = os.homedir();
 // process.env.HOME
 ```
 
+**6. 对称描述**
+
+同类工具（如相对时间 vs 绝对时间）使用对称的 `description` 和 `promptSnippet`，共享句式 + 唯一差异点，让模型注意力自然集中在差异上：
+
+```typescript
+// ✅ 对称 — 共享 "Schedule a reminder alarm using..." 句式
+alarm_wait: "Schedule a reminder alarm using a relative delay in seconds."
+alarm_set:  "Schedule a reminder alarm using an absolute ISO 8601 timestamp."
+
+// promptSnippet 也保持对称
+alarm_wait: "Set alarm (relative): alarm_wait(delay=N, ...)"
+alarm_set:  "Set alarm (absolute): alarm_set(at='...', ...)"
+```
+
+**7. 正面描述优先**
+
+用正面描述说明工具做什么，避免否定句。准确的描述本身就是最好的约束，不需要额外的禁止性提示词：
+
+```typescript
+// ❌ 否定句
+description: "This is NOT a blocking sleep"
+
+// ✅ 正面描述
+description: "When triggered, a message is injected into the conversation"
+```
+
 ### Command 设计原则
 
 **1. 比 tool 宽松**
@@ -440,9 +466,7 @@ pi -e ./tools/my-plugin/index.ts
 npx vitest                    # watch 模式边写边测
 
 # 4. 冒烟测试
-pi -e ./tools/my-plugin/index.ts  # 确认启动不崩溃
-/example                            # 测试命令
-> Please call my_tool now           # 测试工具
+pi -ne -e . -p 'list available tools'  # 确认启动不崩溃、工具被识别
 
 # 5. 补全文档
 npm run update-docs
@@ -587,18 +611,33 @@ Tool 和 Command 应分别列出并标注命名风格：
 
 ### Step 2: 冒烟测试
 
-确认插件不影响 pi 正常启动，并运行单元测试：
+使用 `pi -ne`（non-interactive 模式）加载插件并发送一条简单 prompt 验证：
 
 ```bash
-pi -e ./<plugin-path>/index.ts        # 冒烟：启动不崩溃
+pi -ne -e . -p '<prompt>'
+```
+
+- `-e .`：从当前仓库根目录加载，pi 自动从根 `package.json` 的 `pi.extensions` 中加载所有插件
+- `<prompt>`：一句简单任务，让 agent 触发插件注册的 Tool 即可（不需复杂交互）
+
+示例：
+
+```bash
+pi -ne -e . -p 'list available tools'
+```
+
+有单元测试的插件同时运行：
+
+```bash
 npm test                              # 单元测试全部通过
 ```
 
 检查项：
 - [ ] pi 正常启动，无崩溃
-- [ ] `npm test` 全部通过
-- [ ] 注册的 Tool / Command 可正常调用
-- [ ] Provider 类插件：`/model` 可见新模型，`/login` 流程正常
+- [ ] agent 正常响应用户，无异常日志
+- [ ] 注册的 Tool 被正确识别（可从 model 的 tool list 确认）
+- [ ] `npm test` 全部通过（如适用）
+- [ ] Provider 类插件：模型列表中可见新模型，`/login` 流程正常
 
 ### Step 3: 补全文档
 
@@ -637,13 +676,13 @@ pi install <installUrl>  # 确认可安装
 ## Tag 命名规范
 
 ```
-<plugin-directory-name>@<semver>
+<extension-path>@<semver>
 ```
 
-使用插件目录的最后一个路径组件作为名称：
+`<extension-path>` 即根 `package.json` 中 `pi.extensions` 里声明的相对路径，与 `release.sh` 的第一个参数一致：
 
 - `my-plugin@1.0.0`
-- `category/other-plugin@0.2.0`
+- `tools/alarm@0.3.1`
 
 ---
 
