@@ -173,6 +173,10 @@ export default function (pi: ExtensionAPI) {
 
   // ── Command: /example ───────────────────────────────────────────────────
   //
+  // For interactive wizard patterns (select/input/confirm), see:
+  //   docs/interactive-commands.md
+  //   pi-github /gh-login (full 6-step wizard)
+  //
   // Commands are user-invokable via /command-name in the pi TUI.
   //
   // Key differences from tools:
@@ -246,3 +250,37 @@ function processQuery(
     formatted,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Interactive command pattern (see docs/interactive-commands.md)
+// ═══════════════════════════════════════════════════════════════
+//
+// Use this pattern for commands that manage entities (add/remove/edit).
+// Key UX principles:
+//   1. Visible defaults in prompt text
+//   2. Example placeholders for required fields
+//   3. Purpose hints explaining what each field controls
+//   4. Structured summary showing all saved fields
+//   5. Detail + confirm before destructive actions
+//
+// Example:
+//
+// pi.registerCommand("example-add", {
+//   handler: async (args, ctx) => {
+//     // Quick mode
+//     if (args.trim()) { ctx.ui.notify("Quick: " + args); return; }
+//
+//     // Interactive wizard
+//     const namePrompt = "Item name\n  Default: example-1";
+//     const nameInput = await ctx.ui.input(namePrompt, "example-1");
+//     if (nameInput === undefined) return;
+//     const name = nameInput.trim() || "example-1";
+//
+//     // Structured summary
+//     ctx.ui.notify(`Added: ${name}`, "info");
+//   },
+// });
+//
+// Reference implementations:
+//   pi-github: /gh-login (6-step wizard with platform/url/token/scope)
+//   pi-alarm:  /alarm-cancel (interactive selection from pending list)
